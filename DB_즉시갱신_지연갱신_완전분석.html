@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DB 회복 기법 — 즉시갱신 · 지연갱신 완전 분석</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&family=Noto+Serif+KR:wght@700;900&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════
+   RESET & VARIABLES
+══════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+
+:root{
+  --bg:#f6f8fd;
+  --white:#ffffff;
+  --border:#e2e8f8;
+  --border2:#c8d3f0;
+  --dark:#141928;
+  --dark2:#252d48;
+  --dark3:#3f4d72;
+  --gray:#5e6e9a;
+  --gray2:#9ba8c9;
+
+  /* 즉시갱신 — 파란 계열 */
+  --imm:#1a4fd6;
+  --imm-l:#eef3ff;
+  --imm-m:#c7d7fd;
+  --imm-d:#1237a8;
+
+  /* 지연갱신 — 초록 계열 */
+  --def:#0f8c5a;
+  --def-l:#edfaf3;
+  --def-m:#b0f0d0;
+  --def-d:#096b42;
+
+  --red:#d92f2f;
+  --red-l:#fff1f1;
+  --red-m:#ffc9c9;
+
+  --orange:#c85c00;
+  --orange-l:#fff8f0;
+  --orange-m:#ffd8a8;
+
+  --purple:#6d28d9;
+  --purple-l:#f5f3ff;
+  --purple-m:#ddd6fe;
+
+  --teal:#0b7285;
+  --teal-l:#e3fafc;
+  --teal-m:#99e9f2;
+
+  --amber:#b45309;
+  --amber-l:#fffbeb;
+  --amber-m:#fde68a;
+}
+
+body{
+  background:var(--bg);
+  color:var(--dark);
+  font-family:'Noto Sans KR',sans-serif;
+  font-size:14px;
+  line-height:1.75;
+}
+
+/* ══════════════════════════════════════
+   HEADER
+══════════════════════════════════════ */
+.hd{
+  background:var(--white);
+  border-bottom:2px solid var(--border);
+  box-shadow:0 2px 12px rgba(20,25,40,.06);
+  position:sticky;top:0;z-index:200;
+}
+.hd-inner{
+  max-width:1380px;margin:0 auto;
+  padding:0 28px;height:56px;
+  display:flex;align-items:center;gap:16px;
+}
+.hd-logo{
+  display:flex;align-items:center;gap:9px;
+  font-weight:900;font-size:15px;
+}
+.hd-icon{
+  width:32px;height:32px;border-radius:8px;
+  background:linear-gradient(135deg,var(--imm),var(--def));
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:15px;
+}
+.hd-nav{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+.hd-a{
+  padding:4px 12px;border-radius:20px;
+  font-size:11px;font-weight:700;
+  border:1px solid var(--border2);
+  color:var(--gray);text-decoration:none;
+  transition:all .15s;white-space:nowrap;
+}
+.hd-a:hover{background:var(--imm);color:#fff;border-color:var(--imm)}
+
+/* ══════════════════════════════════════
+   HERO
+══════════════════════════════════════ */
+.hero{
+  background:var(--white);
+  border-bottom:1px solid var(--border);
+  padding:56px 28px 48px;
+  position:relative;overflow:hidden;
+}
+.hero::after{
+  content:'';
+  position:absolute;right:-120px;top:-120px;
+  width:480px;height:480px;border-radius:50%;
+  background:radial-gradient(circle,rgba(26,79,214,.07) 0%,transparent 65%);
+  pointer-events:none;
+}
+.hero-inner{max-width:1380px;margin:0 auto}
+.hero-pill{
+  display:inline-flex;align-items:center;gap:6px;
+  background:linear-gradient(135deg,var(--imm-l),var(--def-l));
+  border:1px solid var(--imm-m);
+  border-radius:20px;padding:5px 16px;
+  font-size:11px;font-weight:800;
+  color:var(--imm-d);letter-spacing:.8px;
+  text-transform:uppercase;margin-bottom:18px;
+}
+.hero h1{
+  font-family:'Noto Serif KR',serif;
+  font-size:clamp(26px,3.8vw,50px);
+  font-weight:900;line-height:1.15;
+  letter-spacing:-1px;margin-bottom:12px;
+}
+.hero h1 .t-imm{color:var(--imm)}
+.hero h1 .t-def{color:var(--def)}
+.hero-sub{
+  font-size:15px;color:var(--gray);
+  max-width:680px;line-height:1.8;margin-bottom:28px;
+}
+.hero-chips{display:flex;gap:10px;flex-wrap:wrap}
+.hchip{
+  padding:6px 18px;border-radius:8px;
+  font-size:12px;font-weight:700;border:1.5px solid;
+}
+
+/* ══════════════════════════════════════
+   LAYOUT
+══════════════════════════════════════ */
+.layout{
+  max-width:1380px;margin:0 auto;
+  display:grid;
+  grid-template-columns:220px 1fr;
+  gap:28px;
+  padding:28px 28px 80px;
+  align-items:start;
+}
+@media(max-width:960px){
+  .layout{grid-template-columns:1fr;padding:20px 16px}
+  .sb{display:none}
+}
+
+/* ══════════════════════════════════════
+   SIDEBAR
+══════════════════════════════════════ */
+.sb{
+  position:sticky;top:70px;
+  background:var(--white);border:1px solid var(--border);
+  border-radius:14px;overflow:hidden;
+  max-height:calc(100vh-88px);overflow-y:auto;
+}
+.sb-head{
+  padding:12px 16px;background:var(--bg);
+  border-bottom:1px solid var(--border);
+  font-size:10px;font-weight:800;color:var(--gray2);
+  letter-spacing:1.2px;text-transform:uppercase;
+}
+.sb-a{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 16px;font-size:12px;color:var(--dark3);
+  text-decoration:none;border-left:3px solid transparent;
+  transition:all .15s;
+}
+.sb-a:hover,.sb-a.active{
+  border-left-color:var(--imm);
+  color:var(--imm);background:var(--imm-l);font-weight:700;
+}
+.sb-dot{
+  width:16px;height:16px;border-radius:4px;
+  font-size:9px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+}
+
+/* ══════════════════════════════════════
+   SECTION CARD
+══════════════════════════════════════ */
+.sec{
+  background:var(--white);border:1px solid var(--border);
+  border-radius:16px;margin-bottom:24px;overflow:hidden;
+  animation:fadeUp .4s ease both;
+}
+.sec:nth-child(2){animation-delay:.05s}
+.sec:nth-child(3){animation-delay:.10s}
+.sec:nth-child(4){animation-delay:.15s}
+.sec:nth-child(5){animation-delay:.20s}
+.sec:nth-child(6){animation-delay:.25s}
+.sec:nth-child(7){animation-delay:.30s}
+
+.sec-head{
+  display:flex;align-items:flex-start;gap:14px;
+  padding:20px 26px 18px;border-bottom:1px solid var(--border);
+  background:var(--bg);
+}
+.sec-icon{
+  width:42px;height:42px;border-radius:11px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:20px;flex-shrink:0;margin-top:2px;
+}
+.sec-num{font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;margin-bottom:3px}
+.sec-title{font-family:'Noto Serif KR',serif;font-size:18px;font-weight:900;letter-spacing:-.2px}
+.sec-desc{font-size:12px;color:var(--gray);margin-top:3px}
+.sec-body{padding:26px}
+
+/* ══════════════════════════════════════
+   SUB TITLE
+══════════════════════════════════════ */
+.sub{
+  font-size:13.5px;font-weight:800;color:var(--dark2);
+  display:flex;align-items:center;gap:8px;
+  margin:26px 0 14px;padding-bottom:8px;
+  border-bottom:1.5px solid var(--border);
+}
+.sub:first-child{margin-top:0}
+.sub::before{content:'';width:4px;height:15px;border-radius:2px;flex-shrink:0}
+.sub-imm::before{background:var(--imm)}
+.sub-def::before{background:var(--def)}
+.sub-red::before{background:var(--red)}
+.sub-orange::before{background:var(--orange)}
+.sub-purple::before{background:var(--purple)}
+.sub-teal::before{background:var(--teal)}
+
+/* ══════════════════════════════════════
+   TABLE
+══════════════════════════════════════ */
+.tbl-wrap{overflow-x:auto;border-radius:11px;border:1px solid var(--border);margin-bottom:18px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead tr{background:var(--bg)}
+th{
+  padding:9px 15px;text-align:left;
+  font-size:11px;font-weight:800;color:var(--gray);
+  letter-spacing:.3px;border-bottom:1.5px solid var(--border2);
+  white-space:nowrap;
+}
+td{
+  padding:9px 15px;vertical-align:top;
+  border-bottom:1px solid var(--border);
+  color:var(--dark2);line-height:1.65;
+}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(26,79,214,.02)}
+td strong{font-weight:700;color:var(--dark)}
+td code{
+  font-family:'Fira Code',monospace;font-size:11.5px;
+  background:var(--imm-l);color:var(--imm-d);
+  padding:1px 5px;border-radius:4px;border:1px solid var(--imm-m);
+}
+
+/* ══════════════════════════════════════
+   CALLOUT
+══════════════════════════════════════ */
+.callout{
+  display:flex;gap:12px;align-items:flex-start;
+  border-radius:11px;padding:14px 18px;
+  margin:14px 0;font-size:13px;line-height:1.7;
+}
+.callout-icon{font-size:18px;flex-shrink:0;line-height:1.5}
+.c-imm {background:var(--imm-l); border-left:4px solid var(--imm)}
+.c-def {background:var(--def-l); border-left:4px solid var(--def)}
+.c-red {background:var(--red-l); border-left:4px solid var(--red)}
+.c-ora {background:var(--orange-l);border-left:4px solid var(--orange)}
+.c-pur {background:var(--purple-l);border-left:4px solid var(--purple)}
+.c-tea {background:var(--teal-l); border-left:4px solid var(--teal)}
+.c-amb {background:var(--amber-l); border-left:4px solid var(--amber)}
+
+/* ══════════════════════════════════════
+   BADGE
+══════════════════════════════════════ */
+.badge{
+  display:inline-flex;align-items:center;
+  padding:2px 9px;border-radius:5px;
+  font-size:10px;font-weight:800;border:1px solid;white-space:nowrap;
+}
+.b-imm{background:var(--imm-l);color:var(--imm-d);border-color:var(--imm-m)}
+.b-def{background:var(--def-l);color:var(--def-d);border-color:var(--def-m)}
+.b-red{background:var(--red-l);color:var(--red);border-color:var(--red-m)}
+.b-ora{background:var(--orange-l);color:var(--orange);border-color:var(--orange-m)}
+.b-grn{background:var(--def-l);color:var(--def);border-color:var(--def-m)}
+
+/* ══════════════════════════════════════
+   DIAGRAM WRAPPER
+══════════════════════════════════════ */
+.diag{
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:13px;padding:22px;margin:16px 0;
+  overflow-x:auto;
+}
+.diag-title{
+  font-size:12px;font-weight:800;color:var(--gray);
+  letter-spacing:.5px;text-transform:uppercase;
+  margin-bottom:18px;display:flex;align-items:center;gap:8px;
+}
+.diag-title::after{content:'';flex:1;height:1px;background:var(--border2)}
+
+/* ══════════════════════════════════════
+   PROCESS STEPS
+══════════════════════════════════════ */
+.steps{display:flex;flex-direction:column;gap:10px}
+.step{
+  display:flex;gap:12px;align-items:flex-start;
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:10px;padding:13px 16px;
+}
+.step-n{
+  width:28px;height:28px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:900;color:#fff;margin-top:1px;
+}
+.step-title{font-size:13px;font-weight:800;margin-bottom:3px}
+.step-desc{font-size:12.5px;color:var(--dark3);line-height:1.65}
+
+/* ══════════════════════════════════════
+   CARD GRID
+══════════════════════════════════════ */
+.cgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:14px 0}
+.card{
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:12px;padding:18px;
+  transition:box-shadow .2s,border-color .2s;
+}
+.card:hover{box-shadow:0 4px 18px rgba(0,0,0,.07);border-color:var(--border2)}
+.card-em{font-size:20px;margin-bottom:9px}
+.card-title{font-size:13px;font-weight:800;color:var(--dark2);margin-bottom:6px}
+.card-body{font-size:12.5px;color:var(--dark3);line-height:1.65}
+
+/* ══════════════════════════════════════
+   COMPARE BOX
+══════════════════════════════════════ */
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+.cmp-box{border-radius:12px;padding:18px;border:1.5px solid}
+.cmp-head{font-size:13px;font-weight:800;display:flex;align-items:center;gap:7px;margin-bottom:12px}
+.cmp-item{font-size:12.5px;margin-bottom:7px;display:flex;gap:8px;color:var(--dark3);line-height:1.55}
+.cmp-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:6px}
+@media(max-width:640px){.cmp{grid-template-columns:1fr}}
+
+/* ══════════════════════════════════════
+   ANIMATIONS
+══════════════════════════════════════ */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
+/* ══════════════════════════════════════
+   FOOTER
+══════════════════════════════════════ */
+.footer{
+  background:var(--dark);color:#8899cc;
+  text-align:center;padding:32px 20px;font-size:12px;
+}
+.footer strong{color:#fff}
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ══ -->
+<header class="hd">
+  <div class="hd-inner">
+    <div class="hd-logo">
+      <div class="hd-icon">🗄️</div>
+      <span>DB 회복 기법 — 즉시갱신 · 지연갱신</span>
+    </div>
+    <nav class="hd-nav">
+      <a class="hd-a" href="#s1">개요</a>
+      <a class="hd-a" href="#s2">즉시갱신</a>
+      <a class="hd-a" href="#s3">지연갱신</a>
+      <a class="hd-a" href="#s4">장애시나리오</a>
+      <a class="hd-a" href="#s5">해결방법</a>
+      <a class="hd-a" href="#s6">비교분석</a>
+      <a class="hd-a" href="#s7">효과적회복</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ══ HERO ══ -->
+<div class="hero">
+  <div class="hero-inner">
+    <div class="hero-pill">🎯 기술사 · SQLP — DB 회복 기법 심층 분석</div>
+    <h1>
+      <span class="t-imm">즉시갱신</span> &amp;
+      <span class="t-def">지연갱신</span><br>회복 기법 완전 분석
+    </h1>
+    <p class="hero-sub">
+      데이터베이스 장애 발생 시 일관된 상태로 복원하는 두 가지 핵심 회복 기법의
+      원리·구조·장애 시나리오·해결 과정·효과적인 회복 방법을 다이어그램과 함께 완전 정리합니다.
+    </p>
+    <div class="hero-chips">
+      <span class="hchip" style="background:var(--imm-l);color:var(--imm-d);border-color:var(--imm-m)">↩️↪️ 즉시갱신 — UNDO + REDO</span>
+      <span class="hchip" style="background:var(--def-l);color:var(--def-d);border-color:var(--def-m)">↪️ 지연갱신 — REDO Only</span>
+      <span class="hchip" style="background:var(--amber-l);color:var(--amber);border-color:var(--amber-m)">📜 WAL 원칙 기반</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══ LAYOUT ══ -->
+<div class="layout">
+
+<!-- SIDEBAR -->
+<aside class="sb">
+  <div class="sb-head">목차</div>
+  <a class="sb-a" href="#s1"><div class="sb-dot" style="background:var(--imm-l);color:var(--imm)">01</div>개요 · 기본 원리</a>
+  <a class="sb-a" href="#s2"><div class="sb-dot" style="background:var(--imm-l);color:var(--imm)">02</div>즉시갱신 기법</a>
+  <a class="sb-a" href="#s3"><div class="sb-dot" style="background:var(--def-l);color:var(--def)">03</div>지연갱신 기법</a>
+  <a class="sb-a" href="#s4"><div class="sb-dot" style="background:var(--red-l);color:var(--red)">04</div>장애 시나리오 분석</a>
+  <a class="sb-a" href="#s5"><div class="sb-dot" style="background:var(--orange-l);color:var(--orange)">05</div>해결 방법 · 과정</a>
+  <a class="sb-a" href="#s6"><div class="sb-dot" style="background:var(--purple-l);color:var(--purple)">06</div>두 기법 비교 분석</a>
+  <a class="sb-a" href="#s7"><div class="sb-dot" style="background:var(--teal-l);color:var(--teal)">07</div>효과적인 회복 방법</a>
+</aside>
+
+<!-- CONTENT -->
+<div>
+
+<!-- ══════ 01 개요 ══════ -->
+<section class="sec" id="s1">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:#eef3ff">🔑</div>
+    <div>
+      <div class="sec-num" style="color:var(--imm)">01 · 개요 & 기본 원리</div>
+      <div class="sec-title">회복 기법의 배경과 WAL 원칙</div>
+      <div class="sec-desc">왜 두 가지 방식이 존재하는가 — 버퍼 정책과 로그의 관계</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="sub sub-imm">📖 회복 기법이란?</div>
+    <div class="callout c-imm">
+      <span class="callout-icon">💡</span>
+      <div>
+        <strong>회복 기법(Recovery Technique)</strong>이란 트랜잭션 실행 중 장애가 발생하여 DB가
+        불일치 상태가 됐을 때, 장애 전 <strong>일관된 상태(Consistent State)</strong>로 복원하는 기법이다.
+        핵심은 <strong>언제 DB에 실제 변경을 반영하느냐</strong>에 따라 두 가지로 나뉜다.
+      </div>
+    </div>
+
+    <div class="sub sub-imm">📜 WAL (Write-Ahead Logging) — 모든 회복 기법의 전제</div>
+
+    <!-- WAL 다이어그램 SVG -->
+    <div class="diag">
+      <div class="diag-title">WAL 원칙 — 로그 선행 기록</div>
+      <svg viewBox="0 0 820 200" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:820px;display:block;margin:0 auto">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#5e6e9a"/>
+          </marker>
+          <marker id="arr-red" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#d92f2f"/>
+          </marker>
+          <marker id="arr-grn" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#0f8c5a"/>
+          </marker>
+          <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#1a4fd6"/>
+          </marker>
+        </defs>
+
+        <!-- 배경 박스들 -->
+        <!-- 트랜잭션 -->
+        <rect x="10" y="60" width="140" height="80" rx="10" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1.5"/>
+        <text x="80" y="85" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="700" fill="#1a4fd6">트랜잭션</text>
+        <text x="80" y="105" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#3f4d72">UPDATE salary</text>
+        <text x="80" y="122" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#3f4d72">= 5000 → 6000</text>
+
+        <!-- 로그 파일 -->
+        <rect x="220" y="30" width="170" height="140" rx="10" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="305" y="55" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="700" fill="#b45309">로그 파일 (Log)</text>
+        <rect x="235" y="65" width="140" height="28" rx="5" fill="#fde68a" stroke="#fcd34d" stroke-width="1"/>
+        <text x="305" y="84" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#78350f">Before: 5000</text>
+        <rect x="235" y="98" width="140" height="28" rx="5" fill="#fde68a" stroke="#fcd34d" stroke-width="1"/>
+        <text x="305" y="117" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#78350f">After:  6000</text>
+        <text x="305" y="155" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#92400e">★ 먼저 기록 (WAL)</text>
+
+        <!-- DB 버퍼 -->
+        <rect x="470" y="60" width="140" height="80" rx="10" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5"/>
+        <text x="540" y="85" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="700" fill="#6d28d9">DB 버퍼</text>
+        <text x="540" y="105" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#3f4d72">(메인 메모리)</text>
+        <text x="540" y="122" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#6d28d9">salary = 6000</text>
+
+        <!-- 디스크 DB -->
+        <rect x="690" y="60" width="120" height="80" rx="10" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="750" y="85" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="700" fill="#0f8c5a">디스크 DB</text>
+        <text x="750" y="105" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#3f4d72">(영구 저장)</text>
+        <text x="750" y="122" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#0f8c5a">salary = 6000</text>
+
+        <!-- 화살표들 -->
+        <!-- 트랜잭션 → 로그 (1st) -->
+        <line x1="152" y1="88" x2="218" y2="88" stroke="#b45309" stroke-width="2" marker-end="url(#arr)"/>
+        <rect x="155" y="70" width="62" height="16" rx="4" fill="#fde68a"/>
+        <text x="186" y="82" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="700" fill="#78350f">① 먼저!</text>
+
+        <!-- 트랜잭션 → 버퍼 (2nd) -->
+        <path d="M 155 108 Q 310 170 468 108" stroke="#6d28d9" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+        <rect x="272" y="168" width="62" height="16" rx="4" fill="#ddd6fe"/>
+        <text x="303" y="180" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="700" fill="#6d28d9">② 그 다음</text>
+
+        <!-- 버퍼 → 디스크 -->
+        <line x1="612" y1="100" x2="688" y2="100" stroke="#0f8c5a" stroke-width="2" marker-end="url(#arr)"/>
+        <rect x="622" y="82" width="56" height="16" rx="4" fill="#b0f0d0"/>
+        <text x="650" y="94" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="700" fill="#096b42">③ 나중에</text>
+
+        <!-- WAL 강조 텍스트 -->
+        <rect x="10" y="165" width="800" height="26" rx="6" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="415" y="183" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="700" fill="#b45309">
+          WAL 원칙: 반드시 로그 먼저 기록 → DB 버퍼 변경 → 디스크 반영 (이 순서를 어기면 회복 불가!)
+        </text>
+      </svg>
+    </div>
+
+    <div class="sub sub-imm">⚙️ 버퍼 관리 정책 — 회복 기법 선택의 핵심</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>정책</th><th>의미</th><th>UNDO 필요?</th><th>REDO 필요?</th><th>적용 기법</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Steal</strong></td>
+            <td>미완료 트랜잭션의 변경을 Commit 전에도 디스크에 기록 가능</td>
+            <td><span class="badge b-red">필요</span></td>
+            <td>—</td>
+            <td><span class="badge b-imm">즉시갱신</span></td>
+          </tr>
+          <tr>
+            <td><strong>No-Steal</strong></td>
+            <td>미완료 트랜잭션의 변경은 Commit 전까지 디스크에 기록 안 함</td>
+            <td><span class="badge b-grn">불필요</span></td>
+            <td>—</td>
+            <td><span class="badge b-def">지연갱신</span></td>
+          </tr>
+          <tr>
+            <td><strong>Force</strong></td>
+            <td>Commit 즉시 모든 변경 페이지를 디스크에 강제 기록</td>
+            <td>—</td>
+            <td><span class="badge b-grn">불필요</span></td>
+            <td>이론적 기법</td>
+          </tr>
+          <tr>
+            <td><strong>No-Force</strong></td>
+            <td>Commit 시 디스크 기록 강제 안 함 (나중에 기록)</td>
+            <td>—</td>
+            <td><span class="badge b-red">필요</span></td>
+            <td><span class="badge b-imm">즉시갱신</span> / <span class="badge b-def">지연갱신</span></td>
+          </tr>
+          <tr>
+            <td><strong>Steal + No-Force</strong></td>
+            <td>성능 최우선 정책 (상용 DBMS 표준)</td>
+            <td><span class="badge b-red">필요</span></td>
+            <td><span class="badge b-red">필요</span></td>
+            <td><span class="badge b-imm">즉시갱신 (표준)</span></td>
+          </tr>
+          <tr>
+            <td><strong>No-Steal + No-Force</strong></td>
+            <td>미완료 변경은 디스크 미기록, Commit도 즉시 강제 안 함</td>
+            <td><span class="badge b-grn">불필요</span></td>
+            <td><span class="badge b-red">필요</span></td>
+            <td><span class="badge b-def">지연갱신</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 02 즉시갱신 ══════ -->
+<section class="sec" id="s2">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--imm-l)">⚡</div>
+    <div>
+      <div class="sec-num" style="color:var(--imm)">02 · 즉시갱신 기법</div>
+      <div class="sec-title">Immediate Update — 변경 즉시 DB에 반영</div>
+      <div class="sec-desc">Steal + No-Force 정책 | UNDO + REDO 모두 필요 | 상용 DBMS 표준 방식</div>
+    </div>
+    <div style="margin-left:auto"><span class="badge b-imm">산업 표준</span></div>
+  </div>
+  <div class="sec-body">
+
+    <div class="callout c-imm">
+      <span class="callout-icon">💡</span>
+      <div>
+        <strong>즉시갱신 기법(Immediate Update)이란</strong> 트랜잭션이 데이터를 변경할 때마다
+        <strong>즉시 DB 버퍼(메인 메모리)에 반영</strong>하고, 경우에 따라 디스크에도 선반영할 수 있는 기법이다.
+        단, WAL 원칙에 따라 반드시 <strong>로그를 먼저 기록(Before + After Image)</strong>한 후 DB를 변경한다.
+        장애 시 미완료 트랜잭션은 <strong>UNDO</strong>, 완료 트랜잭션은 <strong>REDO</strong>로 회복한다.
+      </div>
+    </div>
+
+    <div class="sub sub-imm">📊 즉시갱신 — 정상 실행 흐름 다이어그램</div>
+    <div class="diag">
+      <div class="diag-title">즉시갱신 기법 — 정상 트랜잭션 실행 과정</div>
+      <svg viewBox="0 0 860 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <defs>
+          <marker id="a1" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1a4fd6"/></marker>
+          <marker id="a2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#b45309"/></marker>
+          <marker id="a3" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0f8c5a"/></marker>
+          <marker id="a4" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#6d28d9"/></marker>
+        </defs>
+
+        <!-- 시간 축 -->
+        <line x1="30" y1="50" x2="30" y2="390" stroke="#c8d3f0" stroke-width="2"/>
+        <text x="30" y="42" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9" font-weight="700">시간↓</text>
+
+        <!-- 컬럼 헤더 -->
+        <rect x="60" y="15" width="130" height="28" rx="7" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1.5"/>
+        <text x="125" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#1a4fd6">트랜잭션</text>
+
+        <rect x="240" y="15" width="160" height="28" rx="7" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="320" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#b45309">로그 파일</text>
+
+        <rect x="450" y="15" width="140" height="28" rx="7" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5"/>
+        <text x="520" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#6d28d9">DB 버퍼</text>
+
+        <rect x="640" y="15" width="140" height="28" rx="7" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="710" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#0f8c5a">디스크 DB</text>
+
+        <!-- 구분선들 -->
+        <line x1="55" y1="50" x2="810" y2="50" stroke="#e2e8f8" stroke-width="1" stroke-dasharray="4 3"/>
+
+        <!-- STEP 1: BEGIN -->
+        <circle cx="30" cy="80" r="5" fill="#1a4fd6"/>
+        <rect x="60" y="67" width="130" height="26" rx="6" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="125" y="85" text-anchor="middle" font-family="Fira Code,monospace" font-size="12" fill="#1a4fd6" font-weight="600">BEGIN T1</text>
+        <rect x="240" y="67" width="160" height="26" rx="6" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="320" y="85" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#b45309">[BEGIN, T1]</text>
+
+        <!-- STEP 2: READ -->
+        <circle cx="30" cy="130" r="5" fill="#1a4fd6"/>
+        <rect x="60" y="117" width="130" height="26" rx="6" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="125" y="135" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#1a4fd6">READ(salary)</text>
+        <rect x="450" y="117" width="140" height="26" rx="6" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1"/>
+        <text x="520" y="135" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#6d28d9">salary=5000 읽기</text>
+        <line x1="192" y1="130" x2="448" y2="130" stroke="#9ba8c9" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#a1)"/>
+
+        <!-- STEP 3: 로그 기록 (Before Image) -->
+        <circle cx="30" cy="185" r="5" fill="#b45309"/>
+        <rect x="60" y="172" width="130" height="26" rx="6" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="125" y="190" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#b45309">① 로그 먼저 기록</text>
+        <rect x="240" y="172" width="160" height="26" rx="6" fill="#fde68a" stroke="#fcd34d" stroke-width="1.5"/>
+        <text x="320" y="190" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#78350f">[T1,salary,5000,6000]</text>
+        <line x1="192" y1="185" x2="238" y2="185" stroke="#b45309" stroke-width="2" marker-end="url(#a2)"/>
+        <rect x="172" y="170" width="20" height="16" rx="3" fill="#fde68a"/>
+        <text x="182" y="182" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="800" fill="#78350f">①</text>
+
+        <!-- STEP 4: DB 버퍼 갱신 -->
+        <circle cx="30" cy="240" r="5" fill="#6d28d9"/>
+        <rect x="60" y="227" width="130" height="26" rx="6" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="125" y="245" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#1a4fd6">② DB 버퍼 갱신</text>
+        <rect x="450" y="227" width="140" height="26" rx="6" fill="#ddd6fe" stroke="#c4b5fd" stroke-width="1.5"/>
+        <text x="520" y="245" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#6d28d9">salary=6000 ✏️</text>
+        <line x1="192" y1="240" x2="448" y2="240" stroke="#6d28d9" stroke-width="2" marker-end="url(#a4)"/>
+        <rect x="172" y="225" width="20" height="16" rx="3" fill="#ddd6fe"/>
+        <text x="182" y="237" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="800" fill="#6d28d9">②</text>
+
+        <!-- STEP 5: COMMIT -->
+        <circle cx="30" cy="300" r="6" fill="#0f8c5a"/>
+        <rect x="60" y="287" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="125" y="305" text-anchor="middle" font-family="Fira Code,monospace" font-size="12" fill="#0f8c5a" font-weight="700">COMMIT T1</text>
+        <rect x="240" y="287" width="160" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="320" y="305" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#064e3b">[COMMIT, T1]</text>
+        <line x1="192" y1="300" x2="238" y2="300" stroke="#0f8c5a" stroke-width="2" marker-end="url(#a3)"/>
+
+        <!-- STEP 6: 디스크 반영 (나중에) -->
+        <circle cx="30" cy="360" r="5" fill="#0f8c5a"/>
+        <rect x="60" y="347" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="125" y="365" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#0f8c5a">③ 디스크 반영</text>
+        <rect x="640" y="347" width="140" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="710" y="365" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#064e3b">salary=6000 💾</text>
+        <path d="M 520 253 Q 600 300 709 345" stroke="#0f8c5a" stroke-width="1.5" fill="none" stroke-dasharray="5 3" marker-end="url(#a3)"/>
+        <text x="640" y="308" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#0f8c5a">나중에 Flush</text>
+
+        <!-- 요약 박스 -->
+        <rect x="55" y="395" width="750" height="22" rx="5" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="430" y="411" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#1a4fd6">
+          순서: ① 로그 기록(Before+After) → ② DB 버퍼 즉시 갱신 → ③ Commit → ④ 디스크 반영(나중에)
+        </text>
+      </svg>
+    </div>
+
+    <div class="sub sub-imm">📋 즉시갱신 로그 레코드 구조</div>
+    <div class="diag">
+      <div class="diag-title">즉시갱신 — 로그 레코드 예시</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:12px;border-collapse:collapse;min-width:600px">
+          <tr style="background:#fffbeb">
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a;white-space:nowrap">LSN</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a">TID</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a">유형</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a">항목</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a;white-space:nowrap">Before Image (UNDO용)</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a;white-space:nowrap">After Image (REDO용)</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#92400e;border:1px solid #fde68a">설명</th>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px;color:#1a4fd6">LSN-001</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8"><span class="badge b-imm">BEGIN</span></td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-size:11.5px;color:#5e6e9a">트랜잭션 시작</td>
+          </tr>
+          <tr style="background:#fffbeb">
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-family:Fira Code,monospace;font-size:11px;color:#1a4fd6">LSN-002</td>
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #fde68a"><span class="badge b-ora">UPDATE</span></td>
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-family:Fira Code,monospace;font-size:11px">salary</td>
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-family:Fira Code,monospace;font-size:11px;font-weight:700;color:#d92f2f">5000 ← UNDO</td>
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-family:Fira Code,monospace;font-size:11px;font-weight:700;color:#0f8c5a">6000 ← REDO</td>
+            <td style="padding:8px 12px;border:1px solid #fde68a;font-size:11.5px;color:#5e6e9a">데이터 변경 — <strong>Both Image 기록!</strong></td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px;color:#1a4fd6">LSN-003</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8"><span class="badge b-grn">COMMIT</span></td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-size:11.5px;color:#5e6e9a">완료 — REDO 대상으로 분류</td>
+          </tr>
+        </table>
+      </div>
+      <div style="margin-top:12px;padding:10px 14px;background:var(--imm-l);border-radius:8px;font-size:12px;color:var(--imm-d);border:1px solid var(--imm-m)">
+        ⭐ <strong>즉시갱신의 핵심:</strong> Before Image(이전 값) + After Image(변경 후 값) <strong>모두 기록</strong> → Before로 UNDO, After로 REDO
+      </div>
+    </div>
+
+    <div class="sub sub-imm">📌 즉시갱신 상세 특징</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>항목</th><th>내용</th></tr></thead>
+        <tbody>
+          <tr><td><strong>DB 갱신 시점</strong></td><td>변경 발생 즉시 DB 버퍼에 반영 (Commit 대기 없음)</td></tr>
+          <tr><td><strong>버퍼 정책</strong></td><td>Steal (미완료 트랜잭션 변경도 디스크에 선기록 가능) + No-Force</td></tr>
+          <tr><td><strong>로그 내용</strong></td><td>Before Image(변경 전 값) + After Image(변경 후 값) 모두 기록</td></tr>
+          <tr><td><strong>UNDO 필요 여부</strong></td><td><span class="badge b-red">필요</span> — 미완료 트랜잭션의 변경이 디스크에 반영될 수 있으므로</td></tr>
+          <tr><td><strong>REDO 필요 여부</strong></td><td><span class="badge b-red">필요</span> — Commit됐으나 버퍼에서 디스크로 미반영된 것을 재적용</td></tr>
+          <tr><td><strong>메모리 사용</strong></td><td>효율적 (변경 즉시 반영하여 버퍼를 빨리 해제)</td></tr>
+          <tr><td><strong>대용량 트랜잭션</strong></td><td>가능 (버퍼에 묶어두지 않으므로)</td></tr>
+          <tr><td><strong>회복 복잡도</strong></td><td>복잡 (UNDO + REDO 모두 수행)</td></tr>
+          <tr><td><strong>적용 DBMS</strong></td><td>Oracle, SQL Server, MySQL InnoDB, PostgreSQL — 모든 상용 DBMS</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 03 지연갱신 ══════ -->
+<section class="sec" id="s3">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--def-l)">⏳</div>
+    <div>
+      <div class="sec-num" style="color:var(--def)">03 · 지연갱신 기법</div>
+      <div class="sec-title">Deferred Update — Commit 후 DB에 반영</div>
+      <div class="sec-desc">No-Steal + No-Force 정책 | REDO만 필요 | 단순하지만 성능 제약</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="callout c-def">
+      <span class="callout-icon">💡</span>
+      <div>
+        <strong>지연갱신 기법(Deferred Update)이란</strong> 트랜잭션이 실행되는 동안 모든 변경 내용을
+        <strong>로그에만 기록</strong>하고, 실제 DB에는 반영하지 않다가 트랜잭션이 <strong>성공적으로 완료(Commit)된 후</strong>
+        로그를 기반으로 DB에 일괄 반영하는 기법이다. 미완료 트랜잭션의 변경은 DB에 기록되지 않으므로
+        <strong>UNDO가 불필요</strong>하고, Commit 후 반영되지 않은 것을 <strong>REDO</strong>로 보완한다.
+      </div>
+    </div>
+
+    <div class="sub sub-def">📊 지연갱신 — 정상 실행 흐름 다이어그램</div>
+    <div class="diag">
+      <div class="diag-title">지연갱신 기법 — 정상 트랜잭션 실행 과정</div>
+      <svg viewBox="0 0 860 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <defs>
+          <marker id="d1" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0f8c5a"/></marker>
+          <marker id="d2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#b45309"/></marker>
+          <marker id="d3" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#d92f2f"/></marker>
+        </defs>
+
+        <!-- 시간 축 -->
+        <line x1="30" y1="50" x2="30" y2="410" stroke="#c8d3f0" stroke-width="2"/>
+        <text x="30" y="42" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9" font-weight="700">시간↓</text>
+
+        <!-- 헤더 -->
+        <rect x="60" y="15" width="130" height="28" rx="7" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="125" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#0f8c5a">트랜잭션</text>
+        <rect x="240" y="15" width="160" height="28" rx="7" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="320" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#b45309">로그 파일</text>
+        <rect x="450" y="15" width="140" height="28" rx="7" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5"/>
+        <text x="520" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#6d28d9">DB 버퍼</text>
+        <rect x="640" y="15" width="140" height="28" rx="7" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="710" y="34" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#0f8c5a">디스크 DB</text>
+
+        <!-- STEP 1: BEGIN -->
+        <circle cx="30" cy="80" r="5" fill="#0f8c5a"/>
+        <rect x="60" y="67" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="125" y="85" text-anchor="middle" font-family="Fira Code,monospace" font-size="12" fill="#0f8c5a" font-weight="600">BEGIN T1</text>
+        <rect x="240" y="67" width="160" height="26" rx="6" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="320" y="85" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#b45309">[BEGIN, T1]</text>
+
+        <!-- STEP 2: 변경 → 로그만 -->
+        <circle cx="30" cy="145" r="5" fill="#b45309"/>
+        <rect x="60" y="132" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="125" y="150" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#0f8c5a">① 로그만 기록</text>
+        <rect x="240" y="132" width="160" height="26" rx="6" fill="#fde68a" stroke="#fcd34d" stroke-width="1.5"/>
+        <text x="320" y="150" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#78350f">[T1,salary,—,6000]</text>
+        <line x1="192" y1="145" x2="238" y2="145" stroke="#b45309" stroke-width="2" marker-end="url(#d2)"/>
+        <!-- DB 버퍼 X 표시 -->
+        <rect x="450" y="132" width="140" height="26" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1" stroke-dasharray="4 2"/>
+        <text x="520" y="150" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9">DB 미변경 🚫</text>
+        <!-- X 표시 -->
+        <line x1="420" y1="140" x2="450" y2="155" stroke="#d92f2f" stroke-width="2"/>
+        <line x1="420" y1="155" x2="450" y2="140" stroke="#d92f2f" stroke-width="2"/>
+        <text x="430" y="175" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#d92f2f" font-weight="700">반영 안 함!</text>
+
+        <!-- STEP 3: 또 다른 변경 -->
+        <circle cx="30" cy="215" r="5" fill="#b45309"/>
+        <rect x="60" y="202" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="125" y="220" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#0f8c5a">① 로그만 기록</text>
+        <rect x="240" y="202" width="160" height="26" rx="6" fill="#fde68a" stroke="#fcd34d" stroke-width="1.5"/>
+        <text x="320" y="220" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#78350f">[T1,dept,—,IT]</text>
+        <line x1="192" y1="215" x2="238" y2="215" stroke="#b45309" stroke-width="2" marker-end="url(#d2)"/>
+        <rect x="450" y="202" width="140" height="26" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1" stroke-dasharray="4 2"/>
+        <text x="520" y="220" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9">DB 미변경 🚫</text>
+
+        <!-- STEP 4: COMMIT -->
+        <circle cx="30" cy="285" r="7" fill="#0f8c5a"/>
+        <rect x="60" y="272" width="130" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="2"/>
+        <text x="125" y="290" text-anchor="middle" font-family="Fira Code,monospace" font-size="12" fill="#064e3b" font-weight="700">COMMIT T1</text>
+        <rect x="240" y="272" width="160" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="320" y="290" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#064e3b">[COMMIT, T1]</text>
+        <line x1="192" y1="285" x2="238" y2="285" stroke="#0f8c5a" stroke-width="2" marker-end="url(#d1)"/>
+
+        <!-- STEP 5: Commit 후 DB에 반영 -->
+        <circle cx="30" cy="360" r="5" fill="#0f8c5a"/>
+        <rect x="60" y="347" width="130" height="26" rx="6" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="125" y="365" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#0f8c5a">② REDO로 DB반영</text>
+        <!-- 로그 → 버퍼 -->
+        <line x1="400" y1="285" x2="448" y2="355" stroke="#0f8c5a" stroke-width="2" marker-end="url(#d1)"/>
+        <rect x="450" y="347" width="140" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="520" y="365" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#064e3b">salary=6000 ✅</text>
+        <!-- 버퍼 → 디스크 -->
+        <line x1="592" y1="360" x2="638" y2="360" stroke="#0f8c5a" stroke-width="2" marker-end="url(#d1)"/>
+        <rect x="640" y="347" width="140" height="26" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="710" y="365" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" fill="#064e3b">salary=6000 💾</text>
+
+        <!-- 요약 -->
+        <rect x="55" y="405" width="750" height="22" rx="5" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="430" y="421" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#0f8c5a">
+          순서: ① 로그에만 기록(After Image만) → Commit까지 DB 미변경 → ② Commit 후 REDO로 DB 일괄 반영
+        </text>
+      </svg>
+    </div>
+
+    <div class="sub sub-def">📋 지연갱신 로그 레코드 구조</div>
+    <div class="callout c-def">
+      <span class="callout-icon">📝</span>
+      <div>
+        지연갱신에서는 <strong>After Image(변경 후 값)만 기록</strong>한다. 미완료 트랜잭션의 변경은 DB에 반영되지 않으므로
+        Before Image가 필요 없다. UNDO 자체가 불필요하기 때문이다.
+      </div>
+    </div>
+    <div class="diag">
+      <div class="diag-title">지연갱신 — 로그 레코드 예시 (After Image만 존재)</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:12px;border-collapse:collapse;min-width:500px">
+          <tr style="background:#edfaf3">
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#064e3b;border:1px solid #b0f0d0;white-space:nowrap">LSN</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#064e3b;border:1px solid #b0f0d0">TID</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#064e3b;border:1px solid #b0f0d0">유형</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#064e3b;border:1px solid #b0f0d0">항목</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#9ba8c9;border:1px solid #b0f0d0;white-space:nowrap">Before Image</th>
+            <th style="padding:8px 12px;font-size:10px;font-weight:800;color:#064e3b;border:1px solid #b0f0d0;white-space:nowrap">After Image (REDO용)</th>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px;color:#0f8c5a">LSN-001</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8"><span class="badge b-def">BEGIN</span></td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;color:#9ba8c9">기록 안 함</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+          </tr>
+          <tr style="background:#edfaf3">
+            <td style="padding:8px 12px;border:1px solid #b0f0d0;font-family:Fira Code,monospace;font-size:11px;color:#0f8c5a">LSN-002</td>
+            <td style="padding:8px 12px;border:1px solid #b0f0d0;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #b0f0d0"><span class="badge b-ora">UPDATE</span></td>
+            <td style="padding:8px 12px;border:1px solid #b0f0d0;font-family:Fira Code,monospace;font-size:11px">salary</td>
+            <td style="padding:8px 12px;border:1px solid #b0f0d0;color:#9ba8c9;font-style:italic">— (불필요)</td>
+            <td style="padding:8px 12px;border:1px solid #b0f0d0;font-family:Fira Code,monospace;font-size:11px;font-weight:700;color:#0f8c5a">6000 ← REDO용</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px;color:#0f8c5a">LSN-003</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;font-family:Fira Code,monospace;font-size:11px">T1</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8"><span class="badge b-grn">COMMIT</span></td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8;color:#9ba8c9">—</td>
+            <td style="padding:8px 12px;border:1px solid #e2e8f8">—</td>
+          </tr>
+        </table>
+      </div>
+      <div style="margin-top:12px;padding:10px 14px;background:var(--def-l);border-radius:8px;font-size:12px;color:var(--def-d);border:1px solid var(--def-m)">
+        ⭐ <strong>지연갱신의 핵심:</strong> After Image만 기록 (Before Image 불필요) → UNDO 없이 Commit 후 REDO로만 DB 반영
+      </div>
+    </div>
+
+    <div class="sub sub-def">📌 지연갱신 상세 특징</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>항목</th><th>내용</th></tr></thead>
+        <tbody>
+          <tr><td><strong>DB 갱신 시점</strong></td><td>Commit 완료 후에만 DB에 반영 (실행 중에는 로그에만 기록)</td></tr>
+          <tr><td><strong>버퍼 정책</strong></td><td>No-Steal (미완료 트랜잭션 변경은 디스크에 절대 선기록 안 함)</td></tr>
+          <tr><td><strong>로그 내용</strong></td><td>After Image(변경 후 값)만 기록 — Before Image 불필요</td></tr>
+          <tr><td><strong>UNDO 필요 여부</strong></td><td><span class="badge b-grn">불필요</span> — 미완료 트랜잭션의 변경이 DB에 없으므로 취소할 것도 없음</td></tr>
+          <tr><td><strong>REDO 필요 여부</strong></td><td><span class="badge b-red">필요</span> — Commit됐으나 DB 미반영 시 After Image로 재적용</td></tr>
+          <tr><td><strong>메모리 사용</strong></td><td>많음 (Commit 전까지 모든 변경을 버퍼에 보관해야 함)</td></tr>
+          <tr><td><strong>대용량 트랜잭션</strong></td><td>불리 (버퍼를 Commit까지 점유, 버퍼 부족 시 문제 발생)</td></tr>
+          <tr><td><strong>회복 복잡도</strong></td><td>단순 (REDO만 수행, 로그 탐색도 간단)</td></tr>
+          <tr><td><strong>적용 DBMS</strong></td><td>거의 미사용 (이론/교육용). 일부 경량 DB에서 활용</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 04 장애 시나리오 ══════ -->
+<section class="sec" id="s4">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--red-l)">⚡</div>
+    <div>
+      <div class="sec-num" style="color:var(--red)">04 · 장애 시나리오 분석</div>
+      <div class="sec-title">각 기법에서 장애 발생 시 데이터 상태</div>
+      <div class="sec-desc">어떤 데이터가 손상되고 무엇을 복구해야 하는가</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="sub sub-red">⚡ 즉시갱신 — 장애 발생 시나리오 4가지</div>
+
+    <!-- 즉시갱신 타임라인 -->
+    <div class="diag">
+      <div class="diag-title">즉시갱신 — 장애 발생 위치에 따른 시나리오</div>
+      <svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <!-- 시간축 -->
+        <line x1="30" y1="80" x2="820" y2="80" stroke="#c8d3f0" stroke-width="2.5" marker-end="url(#arr)"/>
+        <text x="835" y="84" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9">시간→</text>
+
+        <!-- 체크포인트 -->
+        <line x1="180" y1="60" x2="180" y2="260" stroke="#b45309" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <rect x="140" y="45" width="80" height="18" rx="4" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="180" y="58" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="700" fill="#b45309">Checkpoint</text>
+
+        <!-- 장애 발생 -->
+        <line x1="620" y1="55" x2="620" y2="260" stroke="#d92f2f" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="575" y="40" width="90" height="18" rx="4" fill="#fff1f1" stroke="#ffc9c9" stroke-width="1"/>
+        <text x="620" y="53" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="800" fill="#d92f2f">⚡ 장애 발생</text>
+
+        <!-- T1: Checkpoint 전 Commit 완료 -->
+        <rect x="60" y="95" width="220" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="170" y="110" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#064e3b">T1 ─── COMMIT ✅</text>
+        <text x="750" y="110" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#064e3b" font-weight="700">→ REDO 불필요</text>
+
+        <!-- T2: Checkpoint 넘어 Commit 완료 -->
+        <rect x="130" y="123" width="360" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="310" y="138" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#064e3b">T2 ─────────── COMMIT ✅</text>
+        <text x="750" y="138" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#1a4fd6" font-weight="700">→ REDO 필요 ↪️</text>
+
+        <!-- T3: 장애 시 진행 중 (Checkpoint 전 시작) -->
+        <rect x="90" y="152" width="530" height="22" rx="5" fill="#ffc9c9" stroke="#fca5a5" stroke-width="1.5"/>
+        <text x="355" y="167" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#7f1d1d">T3 ─────────────────── 장애 시 미완료 ❌</text>
+        <text x="750" y="167" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#d92f2f" font-weight="700">→ UNDO 필요 ↩️</text>
+
+        <!-- T4: Checkpoint 후 시작, 진행 중 -->
+        <rect x="250" y="180" width="370" height="22" rx="5" fill="#ffc9c9" stroke="#fca5a5" stroke-width="1.5"/>
+        <text x="435" y="195" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#7f1d1d">T4 ──────────── 장애 시 미완료 ❌</text>
+        <text x="750" y="195" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#d92f2f" font-weight="700">→ UNDO 필요 ↩️</text>
+
+        <!-- 범례 -->
+        <rect x="30" y="230" width="790" height="40" rx="7" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <rect x="45" y="244" width="14" height="14" rx="2" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1"/>
+        <text x="65" y="255" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#064e3b" font-weight="700">REDO 대상 (Commit 완료)</text>
+        <rect x="230" y="244" width="14" height="14" rx="2" fill="#ffc9c9" stroke="#fca5a5" stroke-width="1"/>
+        <text x="250" y="255" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#7f1d1d" font-weight="700">UNDO 대상 (미완료)</text>
+        <text x="430" y="255" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#5e6e9a">T1은 Checkpoint 전 완료 → 디스크 반영 확실 → REDO 불필요</text>
+      </svg>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>시나리오</th><th>로그 상태</th><th>디스크 상태</th><th>필요한 회복</th><th>이유</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>T1</strong><br>체크포인트 전 완료</td>
+            <td>COMMIT 있음</td>
+            <td>디스크 반영 확실</td>
+            <td><span class="badge b-grn">회복 불필요</span></td>
+            <td>체크포인트 시 이미 디스크에 Flush됨</td>
+          </tr>
+          <tr style="background:var(--imm-l)">
+            <td><strong>T2</strong><br>체크포인트 후 Commit</td>
+            <td>COMMIT 있음</td>
+            <td>버퍼에만 있고 디스크 미반영 가능</td>
+            <td><span class="badge b-imm">REDO 필요 ↪️</span></td>
+            <td>Commit은 됐으나 장애로 디스크에 기록 못했을 수 있음</td>
+          </tr>
+          <tr style="background:var(--red-l)">
+            <td><strong>T3</strong><br>체크포인트 전 시작, 미완료</td>
+            <td>COMMIT 없음</td>
+            <td>변경이 일부 디스크에 반영될 수 있음(Steal)</td>
+            <td><span class="badge b-red">UNDO 필요 ↩️</span></td>
+            <td>미완료 변경이 디스크에 기록됐을 수 있으므로 취소</td>
+          </tr>
+          <tr style="background:var(--red-l)">
+            <td><strong>T4</strong><br>체크포인트 후 시작, 미완료</td>
+            <td>COMMIT 없음</td>
+            <td>변경이 일부 디스크 반영 가능(Steal)</td>
+            <td><span class="badge b-red">UNDO 필요 ↩️</span></td>
+            <td>동일. 미완료 트랜잭션은 반드시 롤백</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sub sub-red">⏳ 지연갱신 — 장애 발생 시나리오</div>
+    <div class="diag">
+      <div class="diag-title">지연갱신 — 장애 발생 위치에 따른 시나리오</div>
+      <svg viewBox="0 0 860 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <!-- 시간축 -->
+        <line x1="30" y1="70" x2="820" y2="70" stroke="#c8d3f0" stroke-width="2.5" marker-end="url(#arr)"/>
+        <text x="835" y="74" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#9ba8c9">시간→</text>
+
+        <!-- 체크포인트 -->
+        <line x1="180" y1="50" x2="180" y2="230" stroke="#b45309" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <rect x="140" y="35" width="80" height="18" rx="4" fill="#fffbeb" stroke="#fde68a" stroke-width="1"/>
+        <text x="180" y="48" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="700" fill="#b45309">Checkpoint</text>
+
+        <!-- 장애 발생 -->
+        <line x1="620" y1="45" x2="620" y2="230" stroke="#d92f2f" stroke-width="2" stroke-dasharray="4 3"/>
+        <rect x="575" y="30" width="90" height="18" rx="4" fill="#fff1f1" stroke="#ffc9c9" stroke-width="1"/>
+        <text x="620" y="43" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="800" fill="#d92f2f">⚡ 장애 발생</text>
+
+        <!-- T1: 완료 -->
+        <rect x="60" y="85" width="220" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="170" y="100" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#064e3b">T1 ─── COMMIT → DB반영 ✅</text>
+        <text x="700" y="100" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#064e3b" font-weight="700">→ 회복 불필요</text>
+
+        <!-- T2: Checkpoint 후 Commit -->
+        <rect x="130" y="113" width="360" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="310" y="128" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#064e3b">T2 ──────── COMMIT ✅ 但 DB 미반영</text>
+        <text x="700" y="128" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#0f8c5a" font-weight="700">→ REDO 필요 ↪️</text>
+
+        <!-- T3: 미완료 -->
+        <rect x="90" y="142" width="530" height="22" rx="5" fill="#e5e7f0" stroke="#c8d3f0" stroke-width="1.5"/>
+        <text x="355" y="157" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#5e6e9a">T3 ─────────────────── 미완료 (DB에 미기록)</text>
+        <text x="700" y="157" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#5e6e9a" font-weight="700">→ 로그 버림!</text>
+
+        <!-- 핵심 박스 -->
+        <rect x="30" y="190" width="790" height="38" rx="7" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="415" y="206" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#0f8c5a">
+          지연갱신의 핵심: 미완료 트랜잭션(T3)은 DB에 전혀 기록 안 됐으므로 UNDO 불필요!
+        </text>
+        <text x="415" y="221" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" fill="#096b42">
+          로그에서 COMMIT 없으면 그냥 버리면 됨 → 회복이 매우 단순!
+        </text>
+      </svg>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>시나리오</th><th>로그 상태</th><th>디스크 상태</th><th>필요한 회복</th><th>이유</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>T1</strong><br>Commit + DB 반영 완료</td>
+            <td>COMMIT 있음</td>
+            <td>이미 반영됨</td>
+            <td><span class="badge b-grn">회복 불필요</span></td>
+            <td>모든 것이 정상 완료됨</td>
+          </tr>
+          <tr style="background:var(--def-l)">
+            <td><strong>T2</strong><br>Commit 완료, DB 미반영</td>
+            <td>COMMIT 있음</td>
+            <td>로그만 있고 DB 미반영</td>
+            <td><span class="badge b-def">REDO 필요 ↪️</span></td>
+            <td>Commit 후 DB 반영 도중 장애. After Image로 REDO</td>
+          </tr>
+          <tr>
+            <td><strong>T3</strong><br>미완료 트랜잭션</td>
+            <td>COMMIT 없음</td>
+            <td>DB에 아무 변경 없음</td>
+            <td><span class="badge b-grn">UNDO 불필요</span><br><small>(로그 버림)</small></td>
+            <td>No-Steal 정책으로 DB에 전혀 기록 안 됨</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 05 해결 방법 ══════ -->
+<section class="sec" id="s5">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--orange-l)">🛠️</div>
+    <div>
+      <div class="sec-num" style="color:var(--orange)">05 · 해결 방법 & 과정</div>
+      <div class="sec-title">장애 발생 후 단계별 회복 수행 과정</div>
+      <div class="sec-desc">UNDO 과정 · REDO 과정 · 시스템 재시작 후 회복 절차</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="sub sub-imm">🔧 즉시갱신 — 장애 회복 전체 과정</div>
+
+    <!-- 즉시갱신 회복 다이어그램 -->
+    <div class="diag">
+      <div class="diag-title">즉시갱신 회복 절차 — 시스템 재시작 후</div>
+      <svg viewBox="0 0 860 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <!-- 로그 영역 -->
+        <rect x="20" y="20" width="260" height="330" rx="12" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#b45309">📋 로그 파일</text>
+
+        <!-- 로그 레코드들 -->
+        <rect x="35" y="55" width="230" height="22" rx="5" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="150" y="71" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#1a4fd6">LSN001 [BEGIN, T1]</text>
+
+        <rect x="35" y="82" width="230" height="22" rx="5" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="98" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#b45309">LSN002 [T1,A,100,200]</text>
+
+        <rect x="35" y="109" width="230" height="22" rx="5" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1"/>
+        <text x="150" y="125" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#1a4fd6">LSN003 [BEGIN, T2]</text>
+
+        <rect x="35" y="136" width="230" height="22" rx="5" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="152" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#b45309">LSN004 [T2,B,300,400]</text>
+
+        <rect x="35" y="163" width="230" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="150" y="179" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#064e3b" font-weight="700">LSN005 [COMMIT, T2] ✅</text>
+
+        <rect x="35" y="190" width="230" height="22" rx="5" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="206" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#b45309">LSN006 [T1,C,500,600]</text>
+
+        <!-- 장애 표시 -->
+        <rect x="35" y="220" width="230" height="22" rx="5" fill="#fff1f1" stroke="#fca5a5" stroke-width="2"/>
+        <text x="150" y="236" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#d92f2f" font-weight="800">⚡ 장애 발생 — 로그 끝</text>
+
+        <!-- 분석 결과 -->
+        <rect x="35" y="255" width="230" height="50" rx="5" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5"/>
+        <text x="150" y="273" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" font-weight="800" fill="#6d28d9">분석 결과</text>
+        <text x="150" y="289" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#6d28d9">REDO 대상: T2</text>
+        <text x="150" y="303" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#d92f2f">UNDO 대상: T1</text>
+
+        <!-- REDO 단계 -->
+        <rect x="320" y="20" width="240" height="220" rx="12" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="440" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#0f8c5a">↪️ REDO 단계 (T2)</text>
+        <text x="440" y="62" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#0f8c5a">로그를 순방향으로 재적용</text>
+
+        <rect x="335" y="75" width="210" height="30" rx="6" fill="#fff" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="440" y="89" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#0f8c5a">LSN004 확인</text>
+        <text x="440" y="103" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#3f4d72">B: 300 → 400 적용</text>
+
+        <line x1="440" y1="107" x2="440" y2="125" stroke="#0f8c5a" stroke-width="1.5"/>
+
+        <rect x="335" y="127" width="210" height="30" rx="6" fill="#fff" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="440" y="141" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#0f8c5a">After Image 재적용</text>
+        <text x="440" y="155" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#3f4d72">DB.B = 400 확정</text>
+
+        <line x1="440" y1="159" x2="440" y2="177" stroke="#0f8c5a" stroke-width="1.5"/>
+
+        <rect x="335" y="179" width="210" height="30" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="440" y="200" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="800" fill="#064e3b">✅ T2 REDO 완료</text>
+
+        <!-- UNDO 단계 -->
+        <rect x="320" y="255" width="240" height="100" rx="12" fill="#fff1f1" stroke="#fca5a5" stroke-width="1.5"/>
+        <text x="440" y="275" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#d92f2f">↩️ UNDO 단계 (T1)</text>
+        <text x="440" y="292" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#d92f2f">로그를 역방향으로 취소</text>
+
+        <rect x="335" y="302" width="210" height="26" rx="5" fill="#fff" stroke="#fca5a5" stroke-width="1"/>
+        <text x="440" y="319" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#3f4d72">C: 600→500, A: 200→100</text>
+
+        <rect x="335" y="332" width="210" height="22" rx="5" fill="#ffc9c9" stroke="#fca5a5" stroke-width="1.5"/>
+        <text x="440" y="347" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="800" fill="#7f1d1d">✅ T1 UNDO 완료</text>
+
+        <!-- DB 최종 상태 -->
+        <rect x="600" y="20" width="240" height="330" rx="12" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1.5"/>
+        <text x="720" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#1a4fd6">💾 DB 최종 상태</text>
+        <text x="720" y="62" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#5e6e9a">회복 완료 후</text>
+
+        <rect x="615" y="75" width="210" height="35" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="720" y="91" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" font-weight="700" fill="#064e3b">A = 100</text>
+        <text x="720" y="104" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#064e3b">T1 UNDO → 원래값 복원 ↩️</text>
+
+        <rect x="615" y="120" width="210" height="35" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="720" y="136" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" font-weight="700" fill="#064e3b">B = 400</text>
+        <text x="720" y="149" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#064e3b">T2 REDO → 변경값 반영 ↪️</text>
+
+        <rect x="615" y="165" width="210" height="35" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="720" y="181" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" font-weight="700" fill="#064e3b">C = 500</text>
+        <text x="720" y="194" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#064e3b">T1 UNDO → 원래값 복원 ↩️</text>
+
+        <rect x="615" y="270" width="210" height="50" rx="8" fill="#1a4fd6"/>
+        <text x="720" y="292" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#fff">🎉 DB 회복 완료!</text>
+        <text x="720" y="309" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#c7d7fd">일관된 상태로 복원</text>
+
+        <!-- 화살표: 로그→REDO -->
+        <line x1="282" y1="160" x2="318" y2="120" stroke="#0f8c5a" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#a3)"/>
+        <!-- 화살표: 로그→UNDO -->
+        <line x1="282" y1="200" x2="318" y2="290" stroke="#d92f2f" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#d3)"/>
+        <!-- 화살표: REDO→DB -->
+        <line x1="562" y1="140" x2="598" y2="140" stroke="#0f8c5a" stroke-width="1.5" marker-end="url(#a3)"/>
+        <!-- 화살표: UNDO→DB -->
+        <line x1="562" y1="310" x2="598" y2="190" stroke="#d92f2f" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#d3)"/>
+      </svg>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-n" style="background:var(--orange)">1</div>
+        <div>
+          <div class="step-title">로그 분석 — REDO/UNDO 대상 분류</div>
+          <div class="step-desc">
+            시스템 재시작 후 체크포인트부터 로그를 순방향으로 탐색한다.<br>
+            • <strong>REDO 리스트:</strong> COMMIT 로그가 있는 트랜잭션 목록 작성<br>
+            • <strong>UNDO 리스트:</strong> COMMIT 로그가 없는 트랜잭션 목록 작성
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n" style="background:var(--imm)">2</div>
+        <div>
+          <div class="step-title">REDO 수행 — Commit 완료 트랜잭션 재적용</div>
+          <div class="step-desc">
+            로그를 <strong>순방향(앞→뒤)</strong>으로 탐색하며 REDO 리스트의 트랜잭션에 대해 <strong>After Image</strong>를 DB에 재적용한다.<br>
+            • 이미 디스크에 반영된 것도 있을 수 있지만 안전하게 모두 재적용 (멱등성 보장)<br>
+            • PageLSN 비교로 이미 적용된 것은 건너뜀 (ARIES 방식)
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n" style="background:var(--red)">3</div>
+        <div>
+          <div class="step-title">UNDO 수행 — 미완료 트랜잭션 취소</div>
+          <div class="step-desc">
+            로그를 <strong>역방향(뒤→앞)</strong>으로 탐색하며 UNDO 리스트의 트랜잭션에 대해 <strong>Before Image</strong>로 DB를 원상복구한다.<br>
+            • 역순으로 수행해야 데이터 일관성 보장<br>
+            • UNDO 작업도 CLR(보상 로그)로 기록하여 UNDO 중 재장애 대비
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n" style="background:var(--def)">4</div>
+        <div>
+          <div class="step-title">회복 완료 — 정상 운영 재개</div>
+          <div class="step-desc">
+            REDO + UNDO 완료 후 DB가 일관된 상태로 복원된다. DBMS는 정상 운영 모드로 전환하고 신규 트랜잭션을 받기 시작한다.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub sub-def">🌿 지연갱신 — 장애 회복 과정</div>
+
+    <div class="diag">
+      <div class="diag-title">지연갱신 회복 — 단순한 REDO만 수행</div>
+      <svg viewBox="0 0 860 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:860px;display:block;margin:0 auto">
+        <!-- 로그 -->
+        <rect x="20" y="20" width="260" height="225" rx="12" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#b45309">📋 로그 파일</text>
+
+        <rect x="35" y="55" width="230" height="22" rx="5" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="150" y="71" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#0f8c5a">LSN001 [BEGIN, T1]</text>
+        <rect x="35" y="82" width="230" height="22" rx="5" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="98" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#b45309">LSN002 [T1,A,—,200] AfterOnly</text>
+        <rect x="35" y="109" width="230" height="22" rx="5" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="150" y="125" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#064e3b" font-weight="700">LSN003 [COMMIT, T1] ✅</text>
+        <rect x="35" y="136" width="230" height="22" rx="5" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="150" y="152" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#0f8c5a">LSN004 [BEGIN, T2]</text>
+        <rect x="35" y="163" width="230" height="22" rx="5" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+        <text x="150" y="179" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#b45309">LSN005 [T2,B,—,400] AfterOnly</text>
+        <rect x="35" y="190" width="230" height="22" rx="5" fill="#e5e7f0" stroke="#c8d3f0" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <text x="150" y="206" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#d92f2f" font-weight="800">⚡ 장애! T2 COMMIT 없음</text>
+
+        <!-- 회복 과정 -->
+        <rect x="320" y="20" width="240" height="225" rx="12" fill="#edfaf3" stroke="#b0f0d0" stroke-width="1.5"/>
+        <text x="440" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#0f8c5a">🔍 회복 과정</text>
+
+        <rect x="335" y="60" width="210" height="32" rx="6" fill="#fff" stroke="#b0f0d0" stroke-width="1"/>
+        <text x="440" y="75" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#0f8c5a">COMMIT 있는 것만 REDO</text>
+        <text x="440" y="89" text-anchor="middle" font-family="Fira Code,monospace" font-size="10" fill="#3f4d72">T1 → REDO (A=200)</text>
+
+        <line x1="440" y1="94" x2="440" y2="112" stroke="#0f8c5a" stroke-width="1.5"/>
+
+        <rect x="335" y="114" width="210" height="32" rx="6" fill="#e5e7f0" stroke="#c8d3f0" stroke-width="1.5"/>
+        <text x="440" y="129" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="700" fill="#5e6e9a">T2 → 로그 버림</text>
+        <text x="440" y="143" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#5e6e9a">(COMMIT 없음 + DB 미기록)</text>
+
+        <line x1="440" y1="148" x2="440" y2="166" stroke="#0f8c5a" stroke-width="1.5"/>
+
+        <rect x="335" y="168" width="210" height="32" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="440" y="184" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="11" font-weight="800" fill="#064e3b">UNDO 없이 완료!</text>
+        <text x="440" y="197" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#064e3b">매우 단순한 회복 절차</text>
+
+        <!-- DB 상태 -->
+        <rect x="600" y="20" width="240" height="225" rx="12" fill="#eef3ff" stroke="#c7d7fd" stroke-width="1.5"/>
+        <text x="720" y="45" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#1a4fd6">💾 DB 최종 상태</text>
+
+        <rect x="615" y="60" width="210" height="35" rx="6" fill="#b0f0d0" stroke="#6ee7b7" stroke-width="1.5"/>
+        <text x="720" y="76" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" font-weight="700" fill="#064e3b">A = 200</text>
+        <text x="720" y="89" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#064e3b">T1 REDO 반영 ✅</text>
+
+        <rect x="615" y="105" width="210" height="35" rx="6" fill="#f5f5f5" stroke="#ddd" stroke-width="1.5"/>
+        <text x="720" y="121" text-anchor="middle" font-family="Fira Code,monospace" font-size="11" font-weight="700" fill="#9ba8c9">B = (변경 없음)</text>
+        <text x="720" y="134" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#9ba8c9">T2 미완료 → DB 영향 없음</text>
+
+        <rect x="615" y="175" width="210" height="50" rx="8" fill="#0f8c5a"/>
+        <text x="720" y="197" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="12" font-weight="800" fill="#fff">🎉 회복 완료!</text>
+        <text x="720" y="214" text-anchor="middle" font-family="Noto Sans KR,sans-serif" font-size="10" fill="#b0f0d0">UNDO 없이 간단히 완료</text>
+
+        <!-- 화살표 -->
+        <line x1="282" y1="120" x2="318" y2="100" stroke="#0f8c5a" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#a3)"/>
+        <line x1="562" y1="100" x2="598" y2="90" stroke="#0f8c5a" stroke-width="1.5" marker-end="url(#a3)"/>
+      </svg>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-n" style="background:var(--def)">1</div>
+        <div>
+          <div class="step-title">로그 분석 — COMMIT 있는 트랜잭션만 선별</div>
+          <div class="step-desc">로그를 순방향으로 탐색하여 COMMIT 레코드가 있는 트랜잭션만 REDO 리스트에 포함한다. COMMIT 없는 트랜잭션은 DB에 영향이 없으므로 그냥 무시한다.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n" style="background:var(--def)">2</div>
+        <div>
+          <div class="step-title">REDO 수행 — After Image로 DB 반영</div>
+          <div class="step-desc">COMMIT이 있는 트랜잭션의 로그를 순방향으로 재적용하여 DB에 반영한다. Before Image가 없으므로 UNDO 과정 자체가 없다.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-n" style="background:var(--def)">3</div>
+        <div>
+          <div class="step-title">회복 완료 — 정상 운영 재개</div>
+          <div class="step-desc">UNDO 없이 REDO만으로 회복이 완료된다. 회복 절차가 즉시갱신에 비해 훨씬 단순하다.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 06 비교 분석 ══════ -->
+<section class="sec" id="s6">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--purple-l)">⚖️</div>
+    <div>
+      <div class="sec-num" style="color:var(--purple)">06 · 두 기법 완전 비교</div>
+      <div class="sec-title">즉시갱신 vs 지연갱신 — 총정리</div>
+      <div class="sec-desc">원리·성능·회복 복잡도·로그 구조 모든 관점 비교</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="cmp">
+      <div class="cmp-box" style="background:var(--imm-l);border-color:var(--imm-m)">
+        <div class="cmp-head" style="color:var(--imm-d)">⚡ 즉시갱신 (Immediate Update)</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>변경 즉시 DB 버퍼에 반영</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>Before + After Image 모두 기록</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>UNDO + REDO 모두 필요</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>Steal + No-Force 정책</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>버퍼 효율적 사용</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>대용량 트랜잭션 처리 가능</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>회복 절차 복잡</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--imm)"></div>모든 상용 DBMS 채택</div>
+      </div>
+      <div class="cmp-box" style="background:var(--def-l);border-color:var(--def-m)">
+        <div class="cmp-head" style="color:var(--def-d)">⏳ 지연갱신 (Deferred Update)</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>Commit 후에야 DB에 반영</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>After Image만 기록</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>REDO만 필요 (UNDO 불필요)</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>No-Steal + No-Force 정책</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>버퍼 낭비 (Commit까지 보관)</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>대용량 트랜잭션에 불리</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>회복 절차 단순</div>
+        <div class="cmp-item"><div class="cmp-dot" style="background:var(--def)"></div>이론/교육용 (상용 미채택)</div>
+      </div>
+    </div>
+
+    <div class="sub sub-purple">📊 항목별 상세 비교표</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>비교 항목</th><th style="color:var(--imm-d)">⚡ 즉시갱신</th><th style="color:var(--def-d)">⏳ 지연갱신</th></tr></thead>
+        <tbody>
+          <tr><td><strong>DB 갱신 시점</strong></td><td>변경 즉시 DB 버퍼 반영</td><td>COMMIT 후 일괄 반영</td></tr>
+          <tr><td><strong>버퍼 정책</strong></td><td>Steal + No-Force</td><td>No-Steal + No-Force</td></tr>
+          <tr><td><strong>로그 Before Image</strong></td><td><span class="badge b-red">기록 필요</span></td><td><span class="badge b-grn">불필요</span></td></tr>
+          <tr><td><strong>로그 After Image</strong></td><td><span class="badge b-red">기록 필요</span></td><td><span class="badge b-red">기록 필요</span></td></tr>
+          <tr><td><strong>UNDO</strong></td><td><span class="badge b-red">필요</span> (Before Image 이용)</td><td><span class="badge b-grn">불필요</span></td></tr>
+          <tr><td><strong>REDO</strong></td><td><span class="badge b-red">필요</span> (After Image 이용)</td><td><span class="badge b-red">필요</span> (After Image 이용)</td></tr>
+          <tr><td><strong>장애 복구 절차</strong></td><td>복잡 (분석 → REDO → UNDO)</td><td>단순 (분석 → REDO만)</td></tr>
+          <tr><td><strong>버퍼 메모리 효율</strong></td><td>높음 (변경 즉시 반영)</td><td>낮음 (Commit까지 버퍼 점유)</td></tr>
+          <tr><td><strong>대용량 트랜잭션</strong></td><td>유리 (버퍼 조기 해제)</td><td>불리 (버퍼 부족 위험)</td></tr>
+          <tr><td><strong>로그 파일 크기</strong></td><td>더 큼 (Before + After)</td><td>더 작음 (After만)</td></tr>
+          <tr><td><strong>Write I/O 성능</strong></td><td>우수 (분산 기록)</td><td>보통 (Commit 시 집중)</td></tr>
+          <tr><td><strong>현재 사용 여부</strong></td><td><span class="badge b-imm">산업 표준 — 모든 상용 DBMS</span></td><td><span class="badge b-ora">이론/교육용 수준</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════ 07 효과적인 회복 방법 ══════ -->
+<section class="sec" id="s7">
+  <div class="sec-head">
+    <div class="sec-icon" style="background:var(--teal-l)">🚀</div>
+    <div>
+      <div class="sec-num" style="color:var(--teal)">07 · 효과적인 회복 방법 제시</div>
+      <div class="sec-title">현대 DBMS의 최적 회복 전략</div>
+      <div class="sec-desc">즉시갱신 + 검사점 + ARIES 조합 — 성능과 안정성의 최적 균형</div>
+    </div>
+  </div>
+  <div class="sec-body">
+
+    <div class="callout c-tea">
+      <span class="callout-icon">🏆</span>
+      <div>
+        단일 기법만으로는 최적의 회복을 달성하기 어렵다.
+        현대 상용 DBMS는 <strong>즉시갱신 + Fuzzy Checkpoint + ARIES 알고리즘</strong>을 조합하여
+        성능과 신뢰성을 동시에 달성한다.
+      </div>
+    </div>
+
+    <div class="sub sub-teal">✅ 효과적인 회복을 위한 5가지 핵심 전략</div>
+
+    <div class="cgrid">
+      <div class="card" style="border-top:3px solid var(--imm)">
+        <div class="card-em">⚡</div>
+        <div class="card-title">전략 1. 즉시갱신 + WAL 원칙 철저 준수</div>
+        <div class="card-body">
+          <strong>Steal + No-Force</strong> 정책으로 버퍼 효율성 극대화.
+          모든 변경 전 반드시 Before/After Image를 로그에 먼저 기록(WAL).
+          대용량 트랜잭션도 버퍼 부족 없이 처리 가능.<br>
+          <span style="color:var(--imm);font-weight:700">→ 성능과 회복 가능성 동시 확보</span>
+        </div>
+      </div>
+      <div class="card" style="border-top:3px solid var(--orange)">
+        <div class="card-em">🏁</div>
+        <div class="card-title">전략 2. Fuzzy Checkpoint 주기적 수행</div>
+        <div class="card-body">
+          Sharp Checkpoint는 전체 버퍼 Flush 동안 새 트랜잭션을 막아 성능 저하.
+          <strong>Fuzzy Checkpoint</strong>는 시작/종료 LSN을 기록하고 백그라운드로 처리하여
+          운영 중단 없이 체크포인트 수행.<br>
+          <span style="color:var(--orange);font-weight:700">→ 회복 범위 축소 + 운영 성능 유지</span>
+        </div>
+      </div>
+      <div class="card" style="border-top:3px solid var(--purple)">
+        <div class="card-em">🧮</div>
+        <div class="card-title">전략 3. ARIES 알고리즘 적용</div>
+        <div class="card-body">
+          분석(Analysis) → REDO → UNDO 3단계로 최소 범위만 처리.
+          <strong>CLR(보상 로그)</strong>로 UNDO 중 재장애 시에도 안전.
+          <strong>DPT(더티 페이지 테이블)</strong>로 REDO 최소 범위 결정.<br>
+          <span style="color:var(--purple);font-weight:700">→ 회복 시간 최소화 + 안전성 보장</span>
+        </div>
+      </div>
+      <div class="card" style="border-top:3px solid var(--def)">
+        <div class="card-em">💾</div>
+        <div class="card-title">전략 4. 아카이브 로그 + 정기 백업</div>
+        <div class="card-body">
+          로그 기반 회복(REDO/UNDO)은 시스템 고장에만 대응 가능.
+          <strong>기억장치 장애</strong>에 대비하여 정기적인 Full/Incremental 백업과
+          ARCHIVELOG 모드 활성화 필수.<br>
+          <span style="color:var(--def);font-weight:700">→ 디스크 장애도 완전 회복 가능</span>
+        </div>
+      </div>
+      <div class="card" style="border-top:3px solid var(--red)">
+        <div class="card-em">🛡️</div>
+        <div class="card-title">전략 5. 이중화 + 고가용성 구성</div>
+        <div class="card-body">
+          단일 회복 기법의 한계 — 회복 시간(RTO) 동안 서비스 중단.
+          <strong>RAC(Real Application Cluster)</strong>, <strong>Data Guard</strong>,
+          <strong>Standby DB</strong> 구성으로 장애 시 즉각 페일오버.<br>
+          <span style="color:var(--red);font-weight:700">→ RTO ≈ 0 달성 (무중단 운영)</span>
+        </div>
+      </div>
+      <div class="card" style="border-top:3px solid var(--amber)">
+        <div class="card-em">🔍</div>
+        <div class="card-title">전략 6. 사용자 장애 대비 — Flashback</div>
+        <div class="card-body">
+          로그/UNDO 기반 회복은 시스템 장애만 대상. 사용자 실수(잘못된 DELETE 등)는
+          <strong>Flashback Query/Table</strong>로 Undo Segment의 Before Image를 이용하여
+          특정 시점으로 빠르게 복원.<br>
+          <span style="color:var(--amber);font-weight:700">→ 사용자 장애도 신속 회복</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub sub-teal">📊 장애 유형별 최적 회복 방법 선택 가이드</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>장애 유형</th><th>발생 상황</th><th>최적 회복 방법</th><th>핵심 기법</th><th>회복 시간</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>트랜잭션 장애</strong></td>
+            <td>교착상태, 무결성 위반</td>
+            <td>해당 트랜잭션만 UNDO (즉시갱신)</td>
+            <td>Before Image 역방향 적용</td>
+            <td><span class="badge b-grn">수 초 이내</span></td>
+          </tr>
+          <tr>
+            <td><strong>시스템 고장</strong></td>
+            <td>전원 차단, OS 충돌</td>
+            <td>ARIES: 분석→REDO→UNDO</td>
+            <td>즉시갱신 + WAL + Checkpoint</td>
+            <td><span class="badge b-imm">수 분 이내</span></td>
+          </tr>
+          <tr>
+            <td><strong>기억장치 장애</strong></td>
+            <td>디스크 물리 손상</td>
+            <td>백업 복원 + 아카이브 로그 REDO</td>
+            <td>미디어 회복 (RMAN)</td>
+            <td><span class="badge b-ora">수 시간</span></td>
+          </tr>
+          <tr>
+            <td><strong>사용자 장애</strong></td>
+            <td>잘못된 DELETE/DROP</td>
+            <td>Flashback Table/PITR</td>
+            <td>Undo Segment Before Image</td>
+            <td><span class="badge b-imm">수 분</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sub sub-teal">🏆 현대 DBMS 회복 기법 결론</div>
+    <div class="callout c-tea">
+      <span class="callout-icon">🎯</span>
+      <div>
+        <strong>결론:</strong> 현대 상용 DBMS에서 가장 효과적인 회복 방법은<br>
+        ① <strong>즉시갱신 기법</strong> (Steal + No-Force) — 성능과 회복 가능성 확보<br>
+        ② <strong>WAL 원칙</strong> (Before + After Image 기록) — UNDO + REDO 보장<br>
+        ③ <strong>Fuzzy Checkpoint</strong> — 회복 범위 축소, 운영 성능 유지<br>
+        ④ <strong>ARIES 알고리즘</strong> — 최소 범위로 빠른 회복, UNDO 중 재장애 대비<br>
+        ⑤ <strong>아카이브 로그 + 정기 백업</strong> — 기억장치 장애 대응<br>
+        ⑥ <strong>Flashback / PITR</strong> — 사용자 장애 신속 대응<br><br>
+        <span style="color:var(--teal);font-weight:700">지연갱신 기법은 회복이 단순하나 버퍼 낭비와 대용량 트랜잭션 처리 한계로 상용 환경에서는 즉시갱신 기법이 압도적으로 우세하다.</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</div><!-- /content -->
+</div><!-- /layout -->
+
+<footer class="footer">
+  <strong>데이터베이스 회복 기법</strong> — 즉시갱신 · 지연갱신 완전 분석<br>
+  <span style="font-size:11px;opacity:.6;font-family:'Fira Code',monospace">
+    Immediate Update · Deferred Update · WAL · UNDO · REDO · ARIES · Checkpoint
+  </span>
+</footer>
+
+<script>
+const secs  = document.querySelectorAll('section[id]');
+const links = document.querySelectorAll('.sb-a');
+const obs   = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if(e.isIntersecting){
+      links.forEach(l=>l.classList.remove('active'));
+      const a = document.querySelector(`.sb-a[href="#${e.target.id}"]`);
+      if(a) a.classList.add('active');
+    }
+  });
+}, {rootMargin:'-15% 0px -70% 0px'});
+secs.forEach(s=>obs.observe(s));
+</script>
+</body>
+</html>
